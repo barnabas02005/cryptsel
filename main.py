@@ -23,7 +23,11 @@ def count_sig_digits(precision):
 def round_to_sig_figs(num, sig_figs):
     if num == 0:
         return 0
-    return round(num, sig_figs - int(math.floor(math.log10(abs(num)))) - 1)
+    else:
+        digits = sig_figs - int(math.floor(math.log10(abs(num)))) - 1
+        rounded = round(num, digits)
+        # Format to strip floating point noise
+        return float(f"{rounded:.{digits}f}")
 
 def monitor_position_and_reenter(exchange, symbol, position):
     try:
@@ -200,7 +204,40 @@ def trailing_stop_logic(exchange, position, breath_stop, breath_threshold):
     profit_distance = change * leverage
 
     print("Leverage: ", leverage)
+    unrealized_pnl = (entry_price - mark_price) * contracts
+    realized_pnl = float(position["info"].get('curTermRealisedPnlRv') or 0)
+    addUnreRea = unrealized_pnl + realized_pnl
+    # # Round to 4 significant figures inline
+    # unrealized_pnl_rounded = round_to_sig_figs(unrealized_pnl, 4)
+    # realized_pnl_rounded = round_to_sig_figs(realized_pnl, 4)
+
+    print("Unrealized PnL:", unrealized_pnl)
+    print("Realized PnL:", realized_pnl)
+    print(f"Add unrpnl and reapnl: {addUnreRea}")
     print("distance entry - last price (for profit):", profit_distance)
+    
+    if addUnreRea <= 0:
+        if order_id:
+            try:
+                # Try canceling without posSide param first (one-way mode)
+                exchange.cancel_order(order_id, symbol=symbol)
+                print(f"❌ Canceled previous stop-loss {order_id} without posSide")
+            except Exception as e:
+                error_msg = str(e)
+                # Check if error is related to inconsistent position mode
+                if "TE_ERR_INCONSISTENT_POS_MODE" in error_msg:
+                    try:
+                        # Retry with posSide param (hedge mode)
+                        params = {'posSide': 'Long' if side == 'long' else 'Short'}
+                        exchange.cancel_order(order_id, symbol=symbol, params=params)
+                        print(f"❌ Canceled previous stop-loss {order_id} with posSide param")
+                    except Exception as e2:
+                        print(f"⚠️ Failed to cancel stop-loss even with posSide: {e2}")
+                else:
+                    print(f"⚠️ Failed to cancel stop-loss: {e}")
+                    
+        delete_trailing_data(symbol)
+        return
 
     if profit_distance >= threshold:
         print(f"📈 Hello! {side.capitalize()} position on {symbol} is up {round(change * 100, 2)}%")
