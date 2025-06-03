@@ -240,6 +240,7 @@ def trailing_stop_logic(exchange, position, breath_stop, breath_threshold):
                 params={
                     'stopPx': new_stop_price,
                     'triggerType': 'ByLastPrice',
+                    'triggerDirection': 1 if side == 'long' else 2,  # 🔥 This line is required
                     'positionIdx': 1 if side == 'long' else 2,
                     'posSide': 'Long' if side == 'long' else 'Short',
                     'closeOnTrigger': True,
@@ -264,6 +265,7 @@ def trailing_stop_logic(exchange, position, breath_stop, breath_threshold):
                     params={
                         'stopPx': new_stop_price,
                         'triggerType': 'ByLastPrice',
+                        'triggerDirection': 1 if side == 'long' else 2,  # 🔥 This line is required
                         'reduceOnly': True,
                         'closeOnTrigger': True,
                         'timeInForce': 'GoodTillCancel',
