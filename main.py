@@ -215,17 +215,22 @@ def trailing_stop_logic(exchange, position, breath_stop, breath_threshold):
         # ✅ Cancel old order if it exists
         if order_id:
             try:
-                exchange.cancel_order(
-                    order_id,
-                    symbol=symbol,
-                    params={
-                        'posSide': 'Long' if side == 'long' else 'Short'
-                    }
-                )
-
-                print(f"❌ Canceled previous stop-loss {order_id}")
+                # Try canceling without posSide param first (one-way mode)
+                exchange.cancel_order(order_id, symbol=symbol)
+                print(f"❌ Canceled previous stop-loss {order_id} without posSide")
             except Exception as e:
-                print(f"⚠️ Failed to cancel existing stop-loss {order_id}: {e}")
+                error_msg = str(e)
+                # Check if error is related to inconsistent position mode
+                if "TE_ERR_INCONSISTENT_POS_MODE" in error_msg:
+                    try:
+                        # Retry with posSide param (hedge mode)
+                        params = {'posSide': 'Long' if side == 'long' else 'Short'}
+                        exchange.cancel_order(order_id, symbol=symbol, params=params)
+                        print(f"❌ Canceled previous stop-loss {order_id} with posSide param")
+                    except Exception as e2:
+                        print(f"⚠️ Failed to cancel stop-loss even with posSide: {e2}")
+                else:
+                    print(f"⚠️ Failed to cancel stop-loss: {e}"))
 
         order_created = False
 
