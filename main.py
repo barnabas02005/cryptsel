@@ -230,7 +230,7 @@ def trailing_stop_logic(exchange, position, breath_stop, breath_threshold):
                     except Exception as e2:
                         print(f"⚠️ Failed to cancel stop-loss even with posSide: {e2}")
                 else:
-                    print(f"⚠️ Failed to cancel stop-loss: {e}"))
+                    print(f"⚠️ Failed to cancel stop-loss: {e}")
 
         order_created = False
 
