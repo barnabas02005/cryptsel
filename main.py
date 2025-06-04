@@ -94,24 +94,24 @@ def monitor_position_and_reenter(exchange, symbol, position):
     except KeyError as ke:
         print(f"Missing key: {ke}")
 
-    # Fetch recent orders
-    try:
-        orders = exchange.fetchOrders(symbol)
-        if orders:
-            print("\nRecent Trades:")
-            for order in orders:
-                print(f"Symbol: {order['symbol']}")
-                print(f"Type: {order['type']}")
-                print(f"Side: {order['side']}")
-                print(f"Price: {order['price']}")
-                print(f"Amount: {order['amount']}")
-                print(f"Cost: {order['cost']}")
-                print(f"Filled: {order['filled']}")
-                print("------")
-        else:
-            print(f"No trade {symbol} history found.")
-    except ccxt.ExchangeError as e:
-        print(f"Error fetching orders: {e}")
+    # # Fetch recent orders
+    # try:
+    #     orders = exchange.fetchOrders(symbol)
+    #     if orders:
+    #         print("\nRecent Trades:")
+    #         for order in orders:
+    #             print(f"Symbol: {order['symbol']}")
+    #             print(f"Type: {order['type']}")
+    #             print(f"Side: {order['side']}")
+    #             print(f"Price: {order['price']}")
+    #             print(f"Amount: {order['amount']}")
+    #             print(f"Cost: {order['cost']}")
+    #             print(f"Filled: {order['filled']}")
+    #             print("------")
+    #     else:
+    #         print(f"No trade {symbol} history found.")
+    # except ccxt.ExchangeError as e:
+    #     print(f"Error fetching orders: {e}")
 
     time.sleep(1)
 
@@ -200,7 +200,7 @@ def trailing_stop_logic(exchange, position, breath_stop, breath_threshold):
     profit_distance = change * leverage
 
     print("Leverage: ", leverage)
-    unrealized_pnl = (entry_price - mark_price) * contracts
+    unrealized_pnl = (mark_price - entry_price) * contracts if side == 'long' else (entry_price - mark_price) * contracts
     realized_pnl = float(position["info"].get('curTermRealisedPnlRv') or 0)
     addUnreRea = unrealized_pnl + realized_pnl
     # # Round to 4 significant figures inline
