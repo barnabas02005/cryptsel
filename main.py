@@ -56,25 +56,31 @@ def monitor_position_and_reenter(exchange, symbol, position):
             print(f"Closeness to Liquidation: {closeness * 100:.2f}%")
 
             # Trigger re-entry logic if close to liquidation
-            if closeness >= 0.3:
+            if closeness >= 0.8:
                 print("⚠️  Mark price is 80% close to liquidation! Considering re-entry...")
-
-                order_side = 'sell' if side == 'short' else 'buy'   # Adjust as needed for 'long'/'short'
+            
+                order_side = 'sell' if side == 'short' else 'buy'
                 order_price = mark_price
                 double_notional = notional * 2
                 order_amount = double_notional / mark_price
                 order_amount = round_to_sig_figs(order_amount, sig_digits)
-
+            
                 print("Double Margin: ", double_notional)
                 print("New Order Amount: ", order_amount)
-
+            
                 try:
-                    # You can configure additional parameters here
+                    # Set isolated margin explicitly before placing the order
+                    exchange.set_margin_mode('isolated', symbol)
+            
+                    # Determine posSide correctly
+                    pos_side = 'Long' if order_side == 'buy' else 'Short'
+            
                     order_params = {
                         'reduceOnly': False,
-                        'marginType': 'isolated',
-                        'posSide': 'Long' if side == 'long' else 'Short',
+                        'posSide': pos_side,
+                        'marginMode': 'isolated'  # Optional, reinforces intent
                     }
+            
                     order = exchange.create_order(
                         symbol=symbol,
                         type='market',
@@ -83,8 +89,10 @@ def monitor_position_and_reenter(exchange, symbol, position):
                         params=order_params
                     )
                     print(f"✅ Re-entry order placed: {order_side} {order_amount} @ {order_price}")
-                except Exception as e:
+            
+                except ccxt.BaseError as e:
                     print(f"❌ Error placing re-entry order: {e}")
+
             else:
                 print("✅ Not close enough to liquidation for re-entry.")
         else:
