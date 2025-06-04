@@ -56,7 +56,7 @@ def monitor_position_and_reenter(exchange, symbol, position):
             print(f"Closeness to Liquidation: {closeness * 100:.2f}%")
 
             # Trigger re-entry logic if close to liquidation
-            if closeness >= 0.8:
+            if closeness >= 0.3:
                 print("⚠️  Mark price is 80% close to liquidation! Considering re-entry...")
             
                 order_side = 'sell' if side == 'short' else 'buy'
