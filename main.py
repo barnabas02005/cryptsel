@@ -23,11 +23,7 @@ def count_sig_digits(precision):
 def round_to_sig_figs(num, sig_figs):
     if num == 0:
         return 0
-    else:
-        digits = sig_figs - int(math.floor(math.log10(abs(num)))) - 1
-        rounded = round(num, digits)
-        # Format to strip floating point noise
-        return float(f"{rounded:.{digits}f}")
+    return round(num, sig_figs - int(math.floor(math.log10(abs(num)))) - 1)
 
 def monitor_position_and_reenter(exchange, symbol, position):
     try:
