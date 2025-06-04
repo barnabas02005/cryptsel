@@ -58,41 +58,51 @@ def monitor_position_and_reenter(exchange, symbol, position):
             # Trigger re-entry logic if close to liquidation
             if closeness >= 0.3:
                 print("⚠️  Mark price is 80% close to liquidation! Considering re-entry...")
-            
+
                 order_side = 'sell' if side == 'short' else 'buy'
                 order_price = mark_price
                 double_notional = notional * 2
                 order_amount = double_notional / mark_price
                 order_amount = round_to_sig_figs(order_amount, sig_digits)
-            
+
                 print("Double Margin: ", double_notional)
                 print("New Order Amount: ", order_amount)
-            
+
                 try:
-                    # Set isolated margin explicitly before placing the order
-                    exchange.set_margin_mode('isolated', symbol)
-            
-                    # Determine posSide correctly
-                    pos_side = 'Long' if order_side == 'buy' else 'Short'
-            
-                    order_params = {
-                        'reduceOnly': False,
-                        'posSide': pos_side,
-                        'marginMode': 'isolated'  # Optional, reinforces intent
-                    }
-            
+                    # First attempt: without posSide (works in one-way mode)
                     order = exchange.create_order(
                         symbol=symbol,
                         type='market',
                         side=order_side,
                         amount=order_amount,
-                        params=order_params
+                        params={
+                            'reduceOnly': False
+                        }
                     )
                     print(f"✅ Re-entry order placed: {order_side} {order_amount} @ {order_price}")
-            
-                except ccxt.BaseError as e:
-                    print(f"❌ Error placing re-entry order: {e}")
 
+                except ccxt.BaseError as e:
+                    # If failed due to position mode, retry with posSide
+                    if 'TE_ERR_INCONSISTENT_POS_MODE' in str(e):
+                        print("🔁 Retrying with posSide due to inconsistent position mode...")
+                        pos_side = 'Long' if order_side == 'buy' else 'Short'
+
+                        try:
+                            order = exchange.create_order(
+                                symbol=symbol,
+                                type='market',
+                                side=order_side,
+                                amount=order_amount,
+                                params={
+                                    'reduceOnly': False,
+                                    'posSide': pos_side
+                                }
+                            )
+                            print(f"✅ Re-entry order (with posSide) placed: {order_side} {order_amount} @ {order_price}")
+                        except ccxt.BaseError as e2:
+                            print(f"❌ Re-entry order failed even with posSide: {e2}")
+                    else:
+                        print(f"❌ Error placing re-entry order: {e}")
             else:
                 print("✅ Not close enough to liquidation for re-entry.")
         else:
