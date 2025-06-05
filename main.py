@@ -325,7 +325,7 @@ def trailing_stop_logic(exchange, position, breath_stop, breath_threshold):
     print(f"Add unrpnl and reapnl: {addUnreRea}")
     print("distance entry - last price (for profit):", profit_distance)
     
-    if addUnreRea <= 0:
+    if addUnreRea <= 0.001:
         if order_id:
             try:
                 # Try canceling without posSide param first (one-way mode)
