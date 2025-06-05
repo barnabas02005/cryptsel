@@ -1,6 +1,8 @@
 import ccxt
 import os
 import time
+import threading
+import queue
 import json
 import math
 import schedule
@@ -25,84 +27,197 @@ def round_to_sig_figs(num, sig_figs):
         return 0
     return round(num, sig_figs - int(math.floor(math.log10(abs(num)))) - 1)
 
+
+def calculateLiquidationTargPrice(_liqprice, _entryprice, _percnt, _round):
+    return round_to_sig_figs(_entryprice + (_liqprice - _entryprice) * _percnt, _round)
+
+def reEnterTrade(exchange, symbol, order_side, order_price, order_amount, order_type):
+    try:
+        # Check if symbol is futures (adjust this check to your actual symbol format)
+        if ":USDT" not in symbol:
+            print(f"Skipping re-entry order for non-futures symbol: {symbol}")
+            return
+
+        # Fetch balance once
+        balance_info = exchange.fetch_balance({'type': 'swap'})
+        usdt_balance = balance_info.get('USDT', {}).get('free', 0)
+        
+        estimated_cost = order_amount * order_price
+        
+        # if usdt_balance < estimated_cost:
+        #     print(f"⚠️ Insufficient USDT balance ({usdt_balance}) for order cost ({estimated_cost}). Skipping order.")
+        #     return
+        
+        # First attempt: without posSide (works in one-way mode)
+        order = exchange.create_order(
+            symbol=symbol,
+            type=order_type,
+            side=order_side,
+            amount=order_amount,
+            price=order_price,
+            params={
+                'reduceOnly': False
+            }
+        )
+        print(f"✅ Re-entry order placed: {order_side} {order_amount} @ {order_price}")
+        
+    except ccxt.BaseError as e:
+        error_msg = str(e)
+        # Handle specific phemex error for pilot contract
+        if 'Pilot contract is not allowed here' in error_msg:
+            print(f"❌ Phemex error: Pilot contract is not allowed for {symbol}. Skipping order.")
+            return
+        
+        # If failed due to position mode, retry with posSide
+        if 'TE_ERR_INCONSISTENT_POS_MODE' in error_msg:
+            print("🔁 Retrying with (Limit) posSide due to inconsistent position mode...")
+            pos_side = 'Long' if order_side == 'buy' else 'Short'
+            try:
+                order = exchange.create_order(
+                    symbol=symbol,
+                    type=order_type,
+                    side=order_side,
+                    amount=order_amount,
+                    price=order_price,
+                    params={
+                        'reduceOnly': False,
+                        'posSide': pos_side
+                    }
+                )
+                print(f"✅ Re-entry Limit order (with posSide) placed: {order_side} {order_amount} @ {order_price}")
+            except ccxt.BaseError as e2:
+                print(f"❌ Re-entry Limit order failed even with posSide: {e2}")
+        else:
+            print(f"❌ Error placing re-entry Limit order: {e}")
+
+            
+def get_position(exchange, symbol):
+    positions = exchange.fetch_positions([symbol])
+    for p in positions:
+        if float(p.get('contracts') or 0) > 0:
+            return p
+    return None
+    
+def cancel_orphan_orders(exchange, all_symbols, order_type):
+    try:
+        positions_map = {}
+        try:
+            # Fetch positions for all symbols once
+            all_positions = exchange.fetch_positions(symbols=all_symbols)
+            for p in all_positions:
+                symbol = p['symbol']
+                contracts = float(p.get('contracts') or p.get('size') or 0)
+                side = p.get('side', '').lower()
+                positions_map[symbol] = {
+                    'has_position': contracts > 0,
+                    'side': side
+                }
+        except Exception as e:
+            print("Error fetching positions:", e)
+            return
+
+        for symbol in all_symbols:
+            try:
+                open_orders = exchange.fetch_open_orders(symbol)
+                if not open_orders:
+                    continue
+
+                position_info = positions_map.get(symbol, {'has_position': False, 'side': None})
+                has_position = position_info['has_position']
+                current_side = position_info['side']
+
+                for order in open_orders:
+                    if order['type'] != order_type:
+                        continue
+
+                    order_side = order['side'].lower()  # 'buy' or 'sell'
+
+                    # Cancel all limit orders if no position exists
+                    if not has_position:
+                        print(f"❌ Cancelling orphaned {order_side.upper()} {order_type} order for {symbol} (no position)")
+                        try:
+                            exchange.cancel_order(order['id'], symbol)
+                        except Exception as e:
+                            if "TE_ERR_INCONSISTENT_POS_MODE" in str(e):
+                                pos_side_str = "Long" if order_side == "buy" else "Short"
+                                print(f"Retrying cancel with posSide={pos_side_str}")
+                                exchange.cancel_order(order['id'], symbol, {'posSide': pos_side_str})
+                            else:
+                                print(f"Error cancelling order: {e}")
+                        continue
+
+                    # Cancel limit orders that do not match the position side
+                    if (order_side == 'buy' and current_side != 'long') or (order_side == 'sell' and current_side != 'short'):
+                        print(f"⚠️ Cancelling mismatched {order_side.upper()} {order_type} order for {symbol} (position side: {current_side})")
+                        try:
+                            exchange.cancel_order(order['id'], symbol)
+                        except Exception as e:
+                            if "TE_ERR_INCONSISTENT_POS_MODE" in str(e):
+                                pos_side_str = "Long" if order_side == "buy" else "Short"
+                                print(f"Retrying cancel with posSide={pos_side_str}")
+                                exchange.cancel_order(order['id'], symbol, {'posSide': pos_side_str})
+                            else:
+                                print(f"Error cancelling order: {e}")
+
+            except Exception as e:
+                print(f"Error handling {symbol}: {e}")
+
+    except Exception as e:
+        print(f"Global error in cancel_orphan_orders: {e}")
+
+        
 def monitor_position_and_reenter(exchange, symbol, position):
     try:
         if position:
+            # print(json.dumps(position, indent = 4))
             liquidation_price = float(position.get('liquidationPrice') or 0)
             entry_price = float(position.get('entryPrice') or 0)
             mark_price = float(position.get('markPrice') or 0)
             contracts = float(position.get('contracts') or 0)
             leverage = float(position.get("leverage") or 1)
             notional = float(position.get('notional') or 0)
-            # print("Notation: ", notional)
-            precision_val = exchange.markets[symbol]['precision']['amount']
-            sig_digits = count_sig_digits(precision_val)
+            price_precision_val = exchange.markets[symbol]['precision']['price']
+            price_sig_digits = count_sig_digits(price_precision_val)
+            amount_precision_val = exchange.markets[symbol]['precision']['amount']
+            amount_sig_digits = count_sig_digits(amount_precision_val)
             side = position.get('side').lower()  # typically 'long' or 'short'
-            
+            fromPercnt = 0.2  #20%
             if not liquidation_price or not entry_price or not mark_price:
                 return  # Skip if essential data is missing
-
             # Calculate how far the price has moved toward liquidation.
             if side == 'long':
                 closeness = 1 - (abs(mark_price - liquidation_price) / abs(entry_price - liquidation_price))
             else:  # short
                 closeness = 1 - (abs(mark_price - liquidation_price) / abs(entry_price - liquidation_price))
-
             print(f"\n--- {symbol} ---")
             print(f"Side: {side}")
             print(f"Entry Price: {entry_price}")
             print(f"Mark Price: {mark_price}")
             print(f"Liquidation Price: {liquidation_price}")
             print(f"Closeness to Liquidation: {closeness * 100:.2f}%")
-
+            # Fetch all open orders
+            open_orders = exchange.fetchOpenOrders(symbol)
+            side_str = 'buy' if side == 'long' else 'sell' # smae side
+            has_same_side_limit = any(
+                o['type'] == 'limit' and o['side'] == side_str for o in open_orders
+            )
+            if has_same_side_limit:
+                print("Same-side limit order already exists. Doing nothing.")
+                return
+            print("Open Orders: ", open_orders)
+            # call on rentry function
+            order_side = 'sell' if side == 'short' else 'buy'
+            order_price = mark_price
+            double_notional = notional * 2
+            order_amount = double_notional / mark_price
+            order_amount = round_to_sig_figs(order_amount, amount_sig_digits)
+            order_type = 'limit'
+            triggerPrice = calculateLiquidationTargPrice(entry_price, liquidation_price, fromPercnt, price_sig_digits)
+            print("Trigger Price: ", triggerPrice, " and Order Amount: ", order_amount)
+            reEnterTrade(exchange, symbol, order_side, triggerPrice, order_amount, order_type)
             # Trigger re-entry logic if close to liquidation
             if closeness >= 0.8:
                 print("⚠️  Mark price is 80% close to liquidation! Considering re-entry...")
-
-                order_side = 'sell' if side == 'short' else 'buy'
-                order_price = mark_price
-                double_notional = notional * 2
-                order_amount = double_notional / mark_price
-                order_amount = round_to_sig_figs(order_amount, sig_digits)
-
-                print("Double Margin: ", double_notional)
-                print("New Order Amount: ", order_amount)
-
-                try:
-                    # First attempt: without posSide (works in one-way mode)
-                    order = exchange.create_order(
-                        symbol=symbol,
-                        type='market',
-                        side=order_side,
-                        amount=order_amount,
-                        params={
-                            'reduceOnly': False
-                        }
-                    )
-                    print(f"✅ Re-entry order placed: {order_side} {order_amount} @ {order_price}")
-
-                except ccxt.BaseError as e:
-                    # If failed due to position mode, retry with posSide
-                    if 'TE_ERR_INCONSISTENT_POS_MODE' in str(e):
-                        print("🔁 Retrying with posSide due to inconsistent position mode...")
-                        pos_side = 'Long' if order_side == 'buy' else 'Short'
-
-                        try:
-                            order = exchange.create_order(
-                                symbol=symbol,
-                                type='market',
-                                side=order_side,
-                                amount=order_amount,
-                                params={
-                                    'reduceOnly': False,
-                                    'posSide': pos_side
-                                }
-                            )
-                            print(f"✅ Re-entry order (with posSide) placed: {order_side} {order_amount} @ {order_price}")
-                        except ccxt.BaseError as e2:
-                            print(f"❌ Re-entry order failed even with posSide: {e2}")
-                    else:
-                        print(f"❌ Error placing re-entry order: {e}")
             else:
                 print("✅ Not close enough to liquidation for re-entry.")
         else:
@@ -111,26 +226,6 @@ def monitor_position_and_reenter(exchange, symbol, position):
         print(f"Exchange error: {e}")
     except KeyError as ke:
         print(f"Missing key: {ke}")
-
-    # # Fetch recent orders
-    # try:
-    #     orders = exchange.fetchOrders(symbol)
-    #     if orders:
-    #         print("\nRecent Trades:")
-    #         for order in orders:
-    #             print(f"Symbol: {order['symbol']}")
-    #             print(f"Type: {order['type']}")
-    #             print(f"Side: {order['side']}")
-    #             print(f"Price: {order['price']}")
-    #             print(f"Amount: {order['amount']}")
-    #             print(f"Cost: {order['cost']}")
-    #             print(f"Filled: {order['filled']}")
-    #             print("------")
-    #     else:
-    #         print(f"No trade {symbol} history found.")
-    # except ccxt.ExchangeError as e:
-    #     print(f"Error fetching orders: {e}")
-
     time.sleep(1)
 
 TRAILING_FOLDER = "trailProfit"
@@ -225,7 +320,7 @@ def trailing_stop_logic(exchange, position, breath_stop, breath_threshold):
     # unrealized_pnl_rounded = round_to_sig_figs(unrealized_pnl, 4)
     # realized_pnl_rounded = round_to_sig_figs(realized_pnl, 4)
 
-    print("Unrealized PnL:", unrealized_pnl)
+    print("\n\nUnrealized PnL:", unrealized_pnl)
     print("Realized PnL:", realized_pnl)
     print(f"Add unrpnl and reapnl: {addUnreRea}")
     print("distance entry - last price (for profit):", profit_distance)
@@ -341,7 +436,14 @@ def trailing_stop_logic(exchange, position, breath_stop, breath_threshold):
             trailing_data['order_updated'] = True
             save_trailing_data(symbol, trailing_data, side)
 
-
+def filename_to_symbol(filename):
+    # Example input: "JELLYJELLY_USDT_USDT.json"
+    parts = filename.replace(".json", "").split("_")
+    if len(parts) < 3:
+        return None
+    base = parts[0]  # e.g. "JELLYJELLY"
+    quote = parts[1]  # e.g. "USDT"
+    return f"{base}/{quote}:USDT"
 
 
 def cleanup_closed_trailing_files(exchange, symbols):
@@ -356,6 +458,8 @@ def cleanup_closed_trailing_files(exchange, symbols):
         for pos in positionst
         if pos.get('contracts', 0) > 0 and pos.get('side', '').lower() in ['long', 'short']
     }
+    
+    deleted_symbols = set()
 
     for subfolder in ['buy', 'sell']:
         path = os.path.join(TRAILING_FOLDER, subfolder)
@@ -364,51 +468,85 @@ def cleanup_closed_trailing_files(exchange, symbols):
                 if (subfolder, fname) not in active:
                     os.remove(os.path.join(path, fname))
                     print(f"🧹 Deleted stale trailing file: {subfolder}/{fname}")
+                    
+                    # 🔑 Add symbol to list of deleted ones
+                    symbol_name = filename_to_symbol(fname)
+                    if symbol_name:
+                        deleted_symbols.add(symbol_name)
         except FileNotFoundError:
             continue
-
-
-
-
-# MAIN
-def main():
+        
+    # 🔁 Only cancel orphan orders for symbols whose trailing files were deleted
     try:
-        # Initialize exchange in isolated margin mode if needed.
-        # Some exchanges require setting margin mode on initialization or via separate endpoints.
-        exchange = ccxt.phemex({
-            'apiKey': api_key,
-            'secret': secret,
-            # Additional configuration may be needed depending on your exchange setup.
-        })
-        
-        # Step 1: Get all markets
+        if deleted_symbols:
+            cancel_orphan_orders(exchange, list(deleted_symbols), 'limit')
+    except Exception as e:
+        print(f"⚠️ Error while cancelling orphan orders during cleanup: {e}")
+
+
+cancel_queue = queue.Queue()
+
+def create_exchange():
+    return ccxt.phemex({
+        'apiKey': api_key,
+        'secret': secret,
+        'enableRateLimit': True,
+    })
+
+def cancel_thread_func(exchange, pos, symbol, order_type):
+    try:
+        cancel_orphan_orders(exchange, pos, symbol, order_type)
+    except Exception as e:
+        print(f"Error in cancel_orphan_orders for {symbol}: {e}")
+        traceback.print_exc()
+
+def monitor_thread_func(exchange, symbol, pos):
+    try:
+        monitor_position_and_reenter(exchange, symbol, pos)
+    except Exception as e:
+        print(f"Error in monitor_position_and_reenter for {symbol}: {e}")
+        traceback.print_exc()
+
+def main_job():
+    try:
+        # Use the global exchange instance
+        global exchange
+
         markets = exchange.load_markets()
-        
         all_symbols = [symbol for symbol in markets if ":USDT" in symbol]
         positionst = exchange.fetch_positions(symbols=all_symbols)
-        usdt_balance = exchange.fetch_balance({'type': 'swap'})['USDT']['total']
+        usdt_balance = exchange.fetch_balance({'type': 'swap'})['USDT']['free']
         print("USDT Balance: ", usdt_balance)
+
         for pos in positionst:
+            symbol = pos['symbol']
             trailing_stop_logic(exchange, pos, 0.10, 0.10)
-            if pos.get('contracts', 0) > 0 or pos.get('size', 0) > 0:
-                monitor_position_and_reenter(exchange, pos['symbol'], pos)
+
+            if pos.get('contracts', 0) > 0:
+                monitor_position_and_reenter(exchange, symbol, pos)         
                 
-        # 🧹 Clean up closed positions' trailing files
+        # # Run cancel_orphan_orders in its own thread immediately
+        # cancel_orphan_orders(exchange, all_symbols, 'limit')
+
         cleanup_closed_trailing_files(exchange, all_symbols)
+
     except Exception as e:
-        print("Error inside job:")
+        print("Error inside main_job:")
         traceback.print_exc()
 
+if __name__ == "__main__":
+    exchange = create_exchange()
 
-schedule.every(10).seconds.do(main)
+    # Schedule main_job every 10 seconds
+    schedule.every(10).seconds.do(main_job)
 
-# ✅ Outer loop handles everything
-while True:
-    try:
-        schedule.run_pending()
-        time.sleep(1)
-    except Exception as e:
-        print("Scheduler crashed:")
-        traceback.print_exc()
-        print("Retrying in 10 seconds...")
-        time.sleep(10)
+    print("Starting scheduler...")
+    while True:
+        try:
+            schedule.run_pending()
+            time.sleep(1)
+        except Exception as e:
+            print("Scheduler crashed:")
+            traceback.print_exc()
+            print("Retrying in 10 seconds...")
+            time.sleep(10)
