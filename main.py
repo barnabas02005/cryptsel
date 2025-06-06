@@ -302,7 +302,7 @@ def trailing_stop_logic(exchange, position, breath_stop, breath_threshold):
 
     trailing_data = load_trailing_data(symbol, side) or {
         'threshold': 0.10,
-        'profit_target_distance': 0.04
+        'profit_target_distance': 0.06
     }
 
     threshold = trailing_data['threshold']
