@@ -520,6 +520,7 @@ def main_job():
 
         usdt_balance_total = exchange.fetch_balance({'type': 'swap'})['USDT']['total']
         print("USDT Balance (Total): ", usdt_balance_total)
+        
         for pos in positionst:
             symbol = pos['symbol']
             trailing_stop_logic(exchange, pos, 0.10, 0.10)
