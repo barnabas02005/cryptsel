@@ -208,7 +208,7 @@ def monitor_position_and_reenter(exchange, symbol, position):
             # call on rentry function
             order_side = 'sell' if side == 'short' else 'buy'
             order_price = mark_price
-            double_notional = notional * 2
+            double_notional = notional * 1.5
             order_amount = double_notional / mark_price
             order_amount = round_to_sig_figs(order_amount, amount_sig_digits)
             order_type = 'limit'
