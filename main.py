@@ -515,9 +515,11 @@ def main_job():
         markets = exchange.load_markets()
         all_symbols = [symbol for symbol in markets if ":USDT" in symbol]
         positionst = exchange.fetch_positions(symbols=all_symbols)
-        usdt_balance = exchange.fetch_balance({'type': 'swap'})['USDT']['free']
-        print("USDT Balance: ", usdt_balance)
+        usdt_balance_free = exchange.fetch_balance({'type': 'swap'})['USDT']['free']
+        print("USDT Balance (Free): ", usdt_balance_free)
 
+        usdt_balance_total = exchange.fetch_balance({'type': 'swap'})['USDT']['total']
+        print("USDT Balance (Total): ", usdt_balance_total)
         for pos in positionst:
             symbol = pos['symbol']
             trailing_stop_logic(exchange, pos, 0.10, 0.10)
